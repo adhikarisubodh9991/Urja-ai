@@ -1,51 +1,47 @@
+import json
 from pathlib import Path
-import numpy as np
+import joblib
 import pandas as pd
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
-DATA_PATH = BASE_DIR / 'data' / 'nepal_electricity_demand.csv'
 
+MODEL = None
+SCALER_X = None
+SCALER_Y = None
+CONFIG = None
 DATA = None
+MODEL_DIR = None
 
 
-def load_data():
-    global DATA
-    if not DATA_PATH.exists():
+def get_model_dir():
+    # fixed folder naming in this version
+    return BASE_DIR / 'models' / 'nepal_2025'
+
+
+def load_resources():
+    global MODEL, SCALER_X, SCALER_Y, CONFIG, DATA, MODEL_DIR
+
+    MODEL_DIR = get_model_dir()
+    model_path = MODEL_DIR / 'nepal_load_forecast_model.joblib'
+    scaler_x_path = MODEL_DIR / 'scaler_X.pkl'
+    scaler_y_path = MODEL_DIR / 'scaler_y.pkl'
+    config_path = MODEL_DIR / 'config.json'
+    data_path = BASE_DIR / 'data' / 'nepal_electricity_demand.csv'
+
+    if not model_path.exists() or not data_path.exists():
         return False
-    DATA = pd.read_csv(DATA_PATH, parse_dates=['date'])
-    DATA.sort_values('date', inplace=True)
-    DATA.reset_index(drop=True, inplace=True)
+
+    MODEL = joblib.load(str(model_path))
+    SCALER_X = joblib.load(str(scaler_x_path))
+    SCALER_Y = joblib.load(str(scaler_y_path))
+    DATA = pd.read_csv(data_path, parse_dates=['date'])
+
+    if config_path.exists():
+        CONFIG = json.loads(config_path.read_text(encoding='utf-8'))
+
     return True
-
-
-def get_historical(months=36):
-    months = min(max(months, 1), len(DATA))
-    df = DATA.iloc[-months:]
-    return {
-        'timestamps': [d.strftime('%Y-%m') for d in df['date']],
-        'values': df['demand_gwh'].tolist(),
-        'unit': 'GWh'
-    }
-
-
-def naive_forecast(months_ahead=12):
-    # basic baseline: average of last 3 months, rolled forward
-    history = list(DATA['demand_gwh'].values[-6:])
-    last_date = DATA['date'].iloc[-1]
-
-    preds = []
-    stamps = []
-
-    for i in range(months_ahead):
-        next_date = last_date + pd.DateOffset(months=i+1)
-        pred = float(np.mean(history[-3:]))
-        preds.append(pred)
-        stamps.append(next_date.strftime('%Y-%m'))
-        history.append(pred)
-
-    return {'timestamps': stamps, 'predictions': preds, 'unit': 'GWh'}
 
 
 @app.route('/')
@@ -53,20 +49,17 @@ def home():
     return jsonify({'project': 'URJA AI'})
 
 
-@app.route('/api/historical')
-def api_historical():
-    months = request.args.get('months', 36, type=int)
-    return jsonify(get_historical(months))
+@app.route('/api/status')
+def status():
+    return jsonify({
+        'model_loaded': MODEL is not None,
+        'data_loaded': DATA is not None,
+        'rows': len(DATA) if DATA is not None else 0,
+        'model_dir': MODEL_DIR.name if MODEL_DIR is not None else None
+    })
 
 
-@app.route('/api/forecast')
-def api_forecast():
-    months = request.args.get('months', 12, type=int)
-    months = min(max(months, 1), 24)
-    return jsonify(naive_forecast(months))
-
-
-load_data()
+load_resources()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

@@ -1,0 +1,11 @@
+{
+  "mae": 40.63722588720571,
+  "rmse": 52.96611746210112,
+  "r2": 0.810240600279456,
+  "mape": 0.03638876702984044,
+  "cv_rmse_mean": 0.345492368217299,
+  "cv_rmse_std": 0.08838430097606419,
+  "training_samples": 149,
+  "test_samples": 12,
+  "note": "Metrics based on holdout test set (last 12 months)"
+}
