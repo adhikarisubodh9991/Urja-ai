@@ -1,70 +1,55 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>URJA AI - Dashboard</title>
+  <title>URJA AI</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #0f172a; color: #e2e8f0; }
-    .row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-    .card { background: #1e293b; padding: 10px 14px; border-radius: 8px; }
-    button, select { padding: 8px 10px; }
-    .box { background: #1e293b; padding: 12px; border-radius: 8px; margin-top: 10px; }
+    body{font-family:system-ui;background:#0f172a;color:#e2e8f0;margin:18px}
+    .card{background:#1e293b;padding:12px;border-radius:8px;margin-bottom:10px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    canvas{background:#111827;border-radius:8px}
   </style>
 </head>
 <body>
-  <h2>URJA AI - Dashboard</h2>
+  <h2>URJA AI - Analytics Endpoints</h2>
   <div class="row">
-    <div class="card">Status: <span id="status">...</span></div>
-    <div class="card">Rows: <span id="rows">...</span></div>
+    <div class="card">Status: <span id="s">..</span></div>
+    <div class="card">R²: <span id="r2">..</span></div>
+    <div class="card">MAPE: <span id="mape">..</span></div>
   </div>
+  <div class="card"><canvas id="main" height="120"></canvas></div>
+  <div class="card"><canvas id="annual" height="90"></canvas></div>
 
-  <div class="row">
-    <select id="months">
-      <option value="6">6 months</option>
-      <option value="12" selected>12 months</option>
-      <option value="24">24 months</option>
-    </select>
-    <button onclick="loadData()">Generate Forecast</button>
-  </div>
+<script>
+let c1, c2;
+async function boot(){
+  const st = await (await fetch('/api/status')).json();
+  document.getElementById('s').innerText = st.status + ' (' + (st.model_dir || '-') + ')';
 
-  <div class="box"><canvas id="chart" height="120"></canvas></div>
+  const me = await (await fetch('/api/metrics')).json();
+  document.getElementById('r2').innerText = me.r2 ? me.r2.toFixed(4) : '-';
+  document.getElementById('mape').innerText = me.mape ? (me.mape*100).toFixed(2) + '%' : '-';
 
-  <script>
-    let chart;
+  const h = await (await fetch('/api/historical?months=36')).json();
+  const f = await (await fetch('/api/forecast?months=12')).json();
 
-    async function loadStatus() {
-      const res = await fetch('/api/status');
-      const data = await res.json();
-      document.getElementById('status').innerText = data.status;
-      document.getElementById('rows').innerText = data.data_points;
-    }
+  const labels = [...h.timestamps, ...f.timestamps];
+  const hist = [...h.values, ...new Array(f.timestamps.length).fill(null)];
+  const fore = [...new Array(h.timestamps.length).fill(null), ...f.predictions];
 
-    async function loadData() {
-      const m = document.getElementById('months').value;
-      const h = await (await fetch('/api/historical?months=36')).json();
-      const f = await (await fetch('/api/forecast?months=' + m)).json();
+  c1 = new Chart(document.getElementById('main'), {
+    type:'line',
+    data:{labels,datasets:[{label:'Historical',data:hist,borderColor:'#22d3ee'},{label:'Forecast',data:fore,borderColor:'#f59e0b'}]}
+  });
 
-      const labels = [...h.timestamps, ...f.timestamps];
-      const histVals = [...h.values, ...new Array(f.timestamps.length).fill(null)];
-      const fVals = [...new Array(h.timestamps.length).fill(null), ...f.predictions];
-
-      if (chart) chart.destroy();
-      chart = new Chart(document.getElementById('chart'), {
-        type: 'line',
-        data: {
-          labels,
-          datasets: [
-            { label: 'Historical', data: histVals, borderColor: '#38bdf8', fill: false },
-            { label: 'Forecast', data: fVals, borderColor: '#f59e0b', fill: false }
-          ]
-        }
-      });
-    }
-
-    loadStatus();
-    loadData();
-  </script>
+  const a = await (await fetch('/api/annual')).json();
+  c2 = new Chart(document.getElementById('annual'), {
+    type:'bar',
+    data:{labels:a.fiscal_years,datasets:[{label:'Demand (TWh)',data:a.demand_twh,backgroundColor:'#38bdf8'}]}
+  });
+}
+boot();
+</script>
 </body>
 </html>
