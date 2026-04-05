@@ -1,8 +1,9 @@
 import json
-from pathlib import Path
-import joblib
+import numpy as np
 import pandas as pd
-from flask import Flask, jsonify
+from pathlib import Path
+from flask import Flask, jsonify, request
+import joblib
 
 app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
@@ -12,22 +13,17 @@ SCALER_X = None
 SCALER_Y = None
 CONFIG = None
 DATA = None
-MODEL_DIR = None
-
-
-def get_model_dir():
-    # fixed folder naming in this version
-    return BASE_DIR / 'models' / 'nepal_2025'
+FEATURE_COLS = None
 
 
 def load_resources():
-    global MODEL, SCALER_X, SCALER_Y, CONFIG, DATA, MODEL_DIR
+    global MODEL, SCALER_X, SCALER_Y, CONFIG, DATA, FEATURE_COLS
+    model_dir = BASE_DIR / 'models' / 'nepal_2025'
 
-    MODEL_DIR = get_model_dir()
-    model_path = MODEL_DIR / 'nepal_load_forecast_model.joblib'
-    scaler_x_path = MODEL_DIR / 'scaler_X.pkl'
-    scaler_y_path = MODEL_DIR / 'scaler_y.pkl'
-    config_path = MODEL_DIR / 'config.json'
+    model_path = model_dir / 'nepal_load_forecast_model.joblib'
+    scaler_x_path = model_dir / 'scaler_X.pkl'
+    scaler_y_path = model_dir / 'scaler_y.pkl'
+    config_path = model_dir / 'config.json'
     data_path = BASE_DIR / 'data' / 'nepal_electricity_demand.csv'
 
     if not model_path.exists() or not data_path.exists():
@@ -40,8 +36,71 @@ def load_resources():
 
     if config_path.exists():
         CONFIG = json.loads(config_path.read_text(encoding='utf-8'))
+    else:
+        CONFIG = {}
+
+    FEATURE_COLS = CONFIG.get('feature_columns', [
+        'month', 'year', 'quarter', 'month_sin', 'month_cos', 'season', 'time_idx',
+        'lag_1', 'lag_2', 'lag_3', 'lag_6', 'lag_12',
+        'rolling_mean_3', 'rolling_mean_6', 'rolling_mean_12',
+        'rolling_std_6', 'rolling_std_12',
+        'trend', 'trend_squared'
+    ])
 
     return True
+
+
+def create_features_for_date(target_date, demand_history, time_idx):
+    month = target_date.month
+    features = {
+        'month': month,
+        'year': target_date.year,
+        'quarter': (month - 1) // 3 + 1,
+        'month_sin': np.sin(2 * np.pi * month / 12),
+        'month_cos': np.cos(2 * np.pi * month / 12),
+        'season': 1 if month in [6, 7, 8, 9] else (2 if month in [10, 11] else (3 if month in [12, 1, 2] else 4)),
+        'time_idx': time_idx,
+        'lag_1': demand_history[-1],
+        'lag_2': demand_history[-2],
+        'lag_3': demand_history[-3],
+        'lag_6': demand_history[-6],
+        'lag_12': demand_history[-12] if len(demand_history) >= 12 else demand_history[0],
+        'rolling_mean_3': np.mean(demand_history[-3:]),
+        'rolling_mean_6': np.mean(demand_history[-6:]),
+        'rolling_mean_12': np.mean(demand_history[-12:]),
+        'rolling_std_6': np.std(demand_history[-6:]),
+        'rolling_std_12': np.std(demand_history[-12:]),
+        'trend': time_idx,
+        'trend_squared': time_idx ** 2,
+    }
+
+    return np.array([[features[c] for c in FEATURE_COLS]])
+
+
+def get_forecast(months_ahead=12):
+    if MODEL is None or DATA is None:
+        return {'error': 'resources not loaded'}
+
+    last_date = DATA['date'].iloc[-1]
+    demand_history = list(DATA['demand_gwh'].values[-12:])
+    last_idx = len(DATA) - 1
+
+    preds = []
+    stamps = []
+
+    for i in range(months_ahead):
+        next_date = last_date + pd.DateOffset(months=i + 1)
+        x = create_features_for_date(next_date, demand_history, last_idx + i + 1)
+        x_scaled = SCALER_X.transform(x)
+        pred_scaled = MODEL.predict(x_scaled)
+        pred = SCALER_Y.inverse_transform(pred_scaled.reshape(-1, 1)).ravel()[0]
+
+        preds.append(float(pred))
+        stamps.append(next_date.strftime('%Y-%m'))
+        demand_history.append(pred)
+        demand_history.pop(0)
+
+    return {'timestamps': stamps, 'predictions': preds, 'unit': 'GWh'}
 
 
 @app.route('/')
@@ -49,14 +108,16 @@ def home():
     return jsonify({'project': 'URJA AI'})
 
 
+@app.route('/api/forecast')
+def api_forecast():
+    months = request.args.get('months', 12, type=int)
+    months = min(max(months, 1), 24)
+    return jsonify(get_forecast(months))
+
+
 @app.route('/api/status')
-def status():
-    return jsonify({
-        'model_loaded': MODEL is not None,
-        'data_loaded': DATA is not None,
-        'rows': len(DATA) if DATA is not None else 0,
-        'model_dir': MODEL_DIR.name if MODEL_DIR is not None else None
-    })
+def api_status():
+    return jsonify({'model_loaded': MODEL is not None, 'data_loaded': DATA is not None})
 
 
 load_resources()
