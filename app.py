@@ -2,10 +2,10 @@ import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 import joblib
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='templates')
 BASE_DIR = Path(__file__).resolve().parent
 
 MODEL = None
@@ -52,7 +52,7 @@ def load_resources():
 
 def create_features_for_date(target_date, demand_history, time_idx):
     month = target_date.month
-    features = {
+    row = {
         'month': month,
         'year': target_date.year,
         'quarter': (month - 1) // 3 + 1,
@@ -73,8 +73,7 @@ def create_features_for_date(target_date, demand_history, time_idx):
         'trend': time_idx,
         'trend_squared': time_idx ** 2,
     }
-
-    return np.array([[features[c] for c in FEATURE_COLS]])
+    return np.array([[row[c] for c in FEATURE_COLS]])
 
 
 def get_forecast(months_ahead=12):
@@ -94,7 +93,6 @@ def get_forecast(months_ahead=12):
         x_scaled = SCALER_X.transform(x)
         pred_scaled = MODEL.predict(x_scaled)
         pred = SCALER_Y.inverse_transform(pred_scaled.reshape(-1, 1)).ravel()[0]
-
         preds.append(float(pred))
         stamps.append(next_date.strftime('%Y-%m'))
         demand_history.append(pred)
@@ -104,8 +102,22 @@ def get_forecast(months_ahead=12):
 
 
 @app.route('/')
-def home():
-    return jsonify({'project': 'URJA AI'})
+def index():
+    return render_template('index.html')
+
+
+@app.route('/api/historical')
+def api_historical():
+    if DATA is None:
+        return jsonify({'error': 'data not loaded'})
+    months = request.args.get('months', 36, type=int)
+    months = min(max(months, 12), len(DATA))
+    df = DATA.iloc[-months:]
+    return jsonify({
+        'timestamps': [d.strftime('%Y-%m') for d in df['date']],
+        'values': df['demand_gwh'].tolist(),
+        'unit': 'GWh'
+    })
 
 
 @app.route('/api/forecast')
@@ -117,7 +129,12 @@ def api_forecast():
 
 @app.route('/api/status')
 def api_status():
-    return jsonify({'model_loaded': MODEL is not None, 'data_loaded': DATA is not None})
+    return jsonify({
+        'status': 'ok' if MODEL is not None else 'error',
+        'model_loaded': MODEL is not None,
+        'data_loaded': DATA is not None,
+        'data_points': len(DATA) if DATA is not None else 0
+    })
 
 
 load_resources()
