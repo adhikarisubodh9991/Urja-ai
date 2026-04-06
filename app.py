@@ -3,12 +3,14 @@ import sys
 import json
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 from flask import Flask, render_template, request, jsonify
 import joblib
 from pathlib import Path
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
+# Cached globals
 MODEL = None
 SCALER_X = None
 SCALER_Y = None
@@ -51,17 +53,18 @@ def load_resources():
     data_path = BASE_DIR / 'data' / 'nepal_electricity_demand.csv'
 
     if not model_path.exists():
-        print('Model not found:', model_path)
+        print("⚠️  Model not found! Please run the notebook first.")
+        print(f"   Expected model path: {model_path}")
         return False
 
+    print("Loading model...")
     MODEL = joblib.load(str(model_path))
     SCALER_X = joblib.load(str(scaler_X_path))
     SCALER_Y = joblib.load(str(scaler_y_path))
 
     if config_path.exists():
-        CONFIG = json.loads(config_path.read_text(encoding='utf-8'))
-    else:
-        CONFIG = {}
+        with open(config_path, 'r', encoding='utf-8') as f:
+            CONFIG = json.load(f)
 
     FEATURE_COLS = CONFIG.get('feature_columns', [
         'month', 'year', 'quarter', 'month_sin', 'month_cos', 'season', 'time_idx',
@@ -71,20 +74,25 @@ def load_resources():
         'trend', 'trend_squared'
     ])
 
+    print("Loading data...")
     DATA = pd.read_csv(data_path, parse_dates=['date'])
+
+    print(f"✓ Model folder: {MODEL_DIR.name}")
+    print(f"✓ Resources loaded! ({len(DATA)} months)")
     return True
 
 
 def create_features_for_date(target_date, demand_history, last_time_idx):
     month = target_date.month
-
+    year = target_date.year
+    
     features = {
         'month': month,
-        'year': target_date.year,
+        'year': year,
         'quarter': (month - 1) // 3 + 1,
         'month_sin': np.sin(2 * np.pi * month / 12),
         'month_cos': np.cos(2 * np.pi * month / 12),
-        'season': 1 if month in [6, 7, 8, 9] else (2 if month in [10, 11] else (3 if month in [12, 1, 2] else 4)),
+        'season': 1 if month in [6,7,8,9] else (2 if month in [10,11] else (3 if month in [12,1,2] else 4)),
         'time_idx': last_time_idx + 1,
         'lag_1': demand_history[-1],
         'lag_2': demand_history[-2],
@@ -99,36 +107,36 @@ def create_features_for_date(target_date, demand_history, last_time_idx):
         'trend': last_time_idx,
         'trend_squared': last_time_idx ** 2,
     }
-
+    
     return np.array([[features[col] for col in FEATURE_COLS]])
 
 
-def get_forecast(months_ahead=12):
+def get_forecast(months_ahead: int = 12) -> dict:
     if MODEL is None:
         return {'error': 'Model not loaded'}
-
+    
     last_date = DATA['date'].iloc[-1]
     demand_history = list(DATA['demand_gwh'].values[-12:])
     last_time_idx = len(DATA) - 1
-
+    
     predictions = []
     timestamps = []
-
+    
     for i in range(months_ahead):
-        next_date = last_date + pd.DateOffset(months=i + 1)
-
+        next_date = last_date + pd.DateOffset(months=i+1)
+        
         X_new = create_features_for_date(next_date, demand_history, last_time_idx + i)
         X_new_scaled = SCALER_X.transform(X_new)
-
+        
         pred_scaled = MODEL.predict(X_new_scaled)
         pred_actual = SCALER_Y.inverse_transform(pred_scaled.reshape(-1, 1)).ravel()[0]
-
-        predictions.append(float(pred_actual))
+        
+        predictions.append(pred_actual)
         timestamps.append(next_date.strftime('%Y-%m'))
-
+        
         demand_history.append(pred_actual)
         demand_history.pop(0)
-
+    
     return {
         'timestamps': timestamps,
         'predictions': predictions,
@@ -136,13 +144,13 @@ def get_forecast(months_ahead=12):
     }
 
 
-def get_historical_data(months=36):
+def get_historical_data(months: int = 36) -> dict:
     if DATA is None:
         return {'error': 'Data not loaded'}
-
+    
     months = min(months, len(DATA))
     recent = DATA.iloc[-months:]
-
+    
     return {
         'timestamps': [d.strftime('%Y-%m') for d in recent['date']],
         'values': recent['demand_gwh'].tolist(),
@@ -158,27 +166,33 @@ def index():
 @app.route('/api/forecast', methods=['GET', 'POST'])
 def api_forecast():
     if request.method == 'POST':
-        payload = request.get_json() or {}
-        months = payload.get('months', 12)
+        data = request.get_json() or {}
+        months = data.get('months', 12)
     else:
         months = request.args.get('months', 12, type=int)
-
+    
     months = min(max(months, 1), 24)
-    return jsonify(get_forecast(months))
+    
+    forecast = get_forecast(months)
+    return jsonify(forecast)
 
 
 @app.route('/api/historical', methods=['GET'])
 def api_historical():
     months = request.args.get('months', 36, type=int)
     months = min(max(months, 12), len(DATA) if DATA is not None else 108)
-    return jsonify(get_historical_data(months))
+    
+    historical = get_historical_data(months)
+    return jsonify(historical)
 
 
 @app.route('/api/metrics', methods=['GET'])
 def api_metrics():
     metrics_path = (MODEL_DIR / 'metrics.json') if MODEL_DIR is not None else None
     if metrics_path is not None and metrics_path.exists():
-        return jsonify(json.loads(metrics_path.read_text(encoding='utf-8')))
+        with open(metrics_path, 'r', encoding='utf-8') as f:
+            metrics = json.load(f)
+        return jsonify(metrics)
     return jsonify({'error': 'Metrics not found'})
 
 
@@ -197,7 +211,7 @@ def api_status():
 def api_annual():
     if DATA is None:
         return jsonify({'error': 'Data not loaded'})
-
+    
     annual = DATA.groupby('fiscal_year')['demand_gwh'].sum().reset_index()
     return jsonify({
         'fiscal_years': annual['fiscal_year'].tolist(),
@@ -209,7 +223,14 @@ def api_annual():
 load_resources()
 
 if __name__ == '__main__':
+    print("\n" + "="*60)
+    print("URJA AI - Nepal Electricity Load Forecasting")
+    print("="*60)
+    
     if load_resources():
+        print("\n🚀 Starting server at http://localhost:5000")
+        print("   Press Ctrl+C to stop\n")
         app.run(debug=True, host='0.0.0.0', port=5000)
     else:
+        print("\n❌ Failed to load resources. Please run the notebook first!")
         sys.exit(1)
