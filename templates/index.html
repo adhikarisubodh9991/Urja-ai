@@ -1,55 +1,84 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>URJA AI</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body{font-family:system-ui;background:#0f172a;color:#e2e8f0;margin:18px}
-    .card{background:#1e293b;padding:12px;border-radius:8px;margin-bottom:10px}
-    .row{display:flex;gap:10px;flex-wrap:wrap}
-    canvas{background:#111827;border-radius:8px}
+    body{font-family:Segoe UI,Arial,sans-serif;background:#0f172a;color:#fff;margin:0;padding:20px}
+    .wrap{max-width:1200px;margin:0 auto}
+    .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+    .card{background:#1e293b;padding:14px;border-radius:10px}
+    .box{background:#1e293b;padding:14px;border-radius:10px;margin-top:12px}
+    select,button{padding:8px 10px}
   </style>
 </head>
 <body>
-  <h2>URJA AI - Analytics Endpoints</h2>
-  <div class="row">
-    <div class="card">Status: <span id="s">..</span></div>
-    <div class="card">R²: <span id="r2">..</span></div>
-    <div class="card">MAPE: <span id="mape">..</span></div>
+<div class="wrap">
+  <h2>URJA AI - Production Ready</h2>
+  <div class="cards">
+    <div class="card">Latest Demand: <span id="ld">-</span></div>
+    <div class="card">R: <span id="r2">-</span></div>
+    <div class="card">MAPE: <span id="mape">-</span></div>
+    <div class="card">Rows: <span id="rows">-</span></div>
   </div>
-  <div class="card"><canvas id="main" height="120"></canvas></div>
-  <div class="card"><canvas id="annual" height="90"></canvas></div>
+
+  <div class="box">
+    <select id="h">
+      <option value="24">2y history</option>
+      <option value="36" selected>3y history</option>
+      <option value="60">5y history</option>
+      <option value="161">all</option>
+    </select>
+    <select id="f">
+      <option value="6">6m forecast</option>
+      <option value="12" selected>12m forecast</option>
+      <option value="24">24m forecast</option>
+    </select>
+    <button onclick="refreshAll()">Refresh</button>
+  </div>
+
+  <div class="box"><canvas id="main" height="120"></canvas></div>
+  <div class="box"><canvas id="annual" height="90"></canvas></div>
+</div>
 
 <script>
-let c1, c2;
-async function boot(){
-  const st = await (await fetch('/api/status')).json();
-  document.getElementById('s').innerText = st.status + ' (' + (st.model_dir || '-') + ')';
+let c1,c2;
 
-  const me = await (await fetch('/api/metrics')).json();
-  document.getElementById('r2').innerText = me.r2 ? me.r2.toFixed(4) : '-';
-  document.getElementById('mape').innerText = me.mape ? (me.mape*100).toFixed(2) + '%' : '-';
+async function refreshAll(){
+  const hs = document.getElementById('h').value;
+  const fs = document.getElementById('f').value;
 
-  const h = await (await fetch('/api/historical?months=36')).json();
-  const f = await (await fetch('/api/forecast?months=12')).json();
+  const status = await (await fetch('/api/status')).json();
+  const hist = await (await fetch('/api/historical?months='+hs)).json();
+  const fore = await (await fetch('/api/forecast?months='+fs)).json();
+  const met = await (await fetch('/api/metrics')).json();
+  const ann = await (await fetch('/api/annual')).json();
 
-  const labels = [...h.timestamps, ...f.timestamps];
-  const hist = [...h.values, ...new Array(f.timestamps.length).fill(null)];
-  const fore = [...new Array(h.timestamps.length).fill(null), ...f.predictions];
+  document.getElementById('rows').innerText = status.data_points || '-';
+  document.getElementById('r2').innerText = met.r2 ? met.r2.toFixed(4) : '-';
+  document.getElementById('mape').innerText = met.mape ? (met.mape*100).toFixed(2)+'%' : '-';
+  document.getElementById('ld').innerText = hist.values ? hist.values[hist.values.length-1].toFixed(2)+' GWh' : '-';
 
+  const labels = [...hist.timestamps, ...fore.timestamps];
+  const a = [...hist.values, ...new Array(fore.timestamps.length).fill(null)];
+  const b = [...new Array(hist.timestamps.length).fill(null), ...fore.predictions];
+
+  if(c1) c1.destroy();
   c1 = new Chart(document.getElementById('main'), {
     type:'line',
-    data:{labels,datasets:[{label:'Historical',data:hist,borderColor:'#22d3ee'},{label:'Forecast',data:fore,borderColor:'#f59e0b'}]}
+    data:{labels,datasets:[{label:'Historical',data:a,borderColor:'#22d3ee'},{label:'Forecast',data:b,borderColor:'#f59e0b'}]}
   });
 
-  const a = await (await fetch('/api/annual')).json();
+  if(c2) c2.destroy();
   c2 = new Chart(document.getElementById('annual'), {
     type:'bar',
-    data:{labels:a.fiscal_years,datasets:[{label:'Demand (TWh)',data:a.demand_twh,backgroundColor:'#38bdf8'}]}
+    data:{labels:ann.fiscal_years,datasets:[{label:'Demand (TWh)',data:ann.demand_twh,backgroundColor:'#38bdf8'}]}
   });
 }
-boot();
+
+refreshAll();
 </script>
 </body>
 </html>
